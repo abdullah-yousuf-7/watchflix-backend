@@ -1,0 +1,1179 @@
+// Shared Prisma Schema for WatchFlixx Microservices Architecture
+// This schema is shared across all microservices and kept in sync
+// Each microservice can generate its own client but uses the same database
+
+generator client {
+  provider = "prisma-client-js"
+}
+// This is the generator for the Auth Service Prisma Client
+generator authClient {
+  provider = "prisma-client-js"
+  output   = "../services/auth/prisma/"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+
+// ============================================================================
+// MICROSERVICE DOMAINS & SHARED MODELS
+// ============================================================================
+
+// Service ownership annotations for microservice boundaries
+// @service:auth - Authentication Service
+// @service:content - Content Management Service  
+// @service:streaming - Streaming & Playback Service
+// @service:payment - Payment & Subscription Service
+// @service:social - Social Features Service
+// @service:analytics - Analytics & Reporting Service
+// @service:notification - Notification Service
+
+// ============================================================================
+// USER AUTHENTICATION & ACCOUNT MANAGEMENT (@service:auth)
+// ============================================================================
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  password  String
+  firstName String?
+  lastName  String?
+  isVerified Boolean @default(false)
+  
+  // OAuth providers
+  googleId  String? @unique
+  appleId   String? @unique
+  
+  // Account status
+  status    UserStatus @default(ACTIVE)
+  
+  // Timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  lastLoginAt DateTime?
+  
+  // Password reset
+  resetToken String?
+  resetTokenExpiry DateTime?
+  
+  // Email verification
+  verificationToken String?
+  verificationTokenExpiry DateTime?
+  
+  // Microservice sync metadata
+  version   Int      @default(1)    // For optimistic locking across services
+  syncedAt  DateTime @default(now()) // Last synchronization timestamp
+  
+  // Relationships
+  profiles Profile[]
+  subscriptions Subscription[]
+  watchHistory WatchHistory[]
+  watchlist Watchlist[]
+  ratings Rating[]
+  reviews Review[]
+  rentals Rental[]
+  partyWatchSessions PartyWatchSession[]
+  partyWatchMessages PartyWatchMessage[]
+  notifications Notification[]
+  userSettings UserSettings?
+  devices Device[]
+  paymentMethods PaymentMethod[]
+  invoices Invoice[]
+  supportTickets SupportTicket[]
+  
+  @@map("users")
+  @@index([email])
+  @@index([status])
+  @@index([createdAt])
+  @@index([syncedAt])
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  DELETED
+  BANNED
+}
+
+model UserSettings {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Interface preferences
+  theme             String @default("dark") // light, dark, auto
+  language          String @default("en")
+  region            String @default("US")
+  timezone          String @default("UTC")
+  
+  // Playback preferences
+  autoPlay          Boolean @default(true)
+  autoPlayNext      Boolean @default(true)
+  defaultQuality    VideoQuality @default(AUTO)
+  subtitlesEnabled  Boolean @default(false)
+  subtitlesLanguage String @default("en")
+  audioLanguage     String @default("en")
+  
+  // Notification preferences
+  emailNotifications Json @default("{}")
+  pushNotifications  Json @default("{}")
+  smsNotifications   Json @default("{}")
+  
+  // Privacy settings
+  profileVisibility String @default("private") // public, friends, private
+  watchHistoryVisible Boolean @default(false)
+  
+  // Data usage
+  dataSaverMode Boolean @default(false)
+  downloadQuality VideoQuality @default(HD)
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@map("user_settings")
+}
+
+model Device {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  deviceName  String
+  deviceType  DeviceType
+  userAgent   String?
+  ipAddress   String?
+  location    String?
+  
+  isActive    Boolean  @default(true)
+  lastUsedAt  DateTime @default(now())
+  createdAt   DateTime @default(now())
+  
+  @@map("devices")
+}
+
+enum DeviceType {
+  WEB
+  MOBILE
+  TABLET
+  TV
+  GAME_CONSOLE
+  OTHER
+}
+
+// ============================================================================
+// PROFILE MANAGEMENT (@service:auth + @service:content)
+// ============================================================================
+
+model Profile {
+  id       String @id @default(cuid())
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  name     String
+  avatar   String?
+  ageCategory AgeCategory
+  
+  // Content restrictions
+  contentRating String @default("R") // G, PG, PG-13, R
+  blockedGenres String[] @default([])
+  blockedKeywords String[] @default([])
+  viewingTimeLimit Int? // minutes per day
+  
+  // PIN protection
+  pinEnabled Boolean @default(false)
+  pinHash    String?
+  
+  // Profile status
+  isActive   Boolean @default(true)
+  isDefault  Boolean @default(false)
+  
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  
+  // Microservice sync metadata
+  version    Int      @default(1)
+  syncedAt   DateTime @default(now())
+  
+  // Relationships
+  watchHistory WatchHistory[]
+  watchlist Watchlist[]
+  ratings Rating[]
+  reviews Review[]
+  partyWatchSessions PartyWatchSession[]
+  profileSettings ProfileSettings?
+  
+  @@map("profiles")
+  @@index([userId])
+  @@index([isActive])
+  @@index([ageCategory])
+  @@index([syncedAt])
+}
+
+enum AgeCategory {
+  ADULT     // 18+
+  TEEN      // 13-17
+  CHILD     // Under 13
+}
+
+model ProfileSettings {
+  id        String  @id @default(cuid())
+  profileId String  @unique
+  profile   Profile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  
+  // Viewing preferences
+  preferredGenres String[] @default([])
+  preferredLanguages String[] @default(["en"])
+  maturityLevel String @default("teen") // kids, teen, adult
+  
+  // Recommendations
+  enableRecommendations Boolean @default(true)
+  shareWatchHistory Boolean @default(true)
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@map("profile_settings")
+}
+
+// ============================================================================
+// SUBSCRIPTION & BILLING (@service:payment)
+// ============================================================================
+
+model Subscription {
+  id       String @id @default(cuid())
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Stripe integration
+  stripeCustomerId String? @unique
+  stripeSubscriptionId String? @unique
+  stripePriceId String?
+  
+  // Plan details
+  planType SubscriptionPlan
+  billingCycle BillingCycle
+  status   SubscriptionStatus
+  
+  // Pricing
+  amount   Decimal @db.Decimal(10,2)
+  currency String @default("USD")
+  
+  // Billing dates
+  currentPeriodStart DateTime
+  currentPeriodEnd   DateTime
+  cancelAt           DateTime?
+  canceledAt         DateTime?
+  endedAt            DateTime?
+  
+  // Trial information
+  trialStart DateTime?
+  trialEnd   DateTime?
+  
+  // Metadata
+  metadata Json @default("{}")
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  // Microservice sync metadata
+  version   Int      @default(1)
+  syncedAt  DateTime @default(now())
+  
+  // Relationships
+  invoices Invoice[]
+  
+  @@map("subscriptions")
+  @@index([userId])
+  @@index([status])
+  @@index([planType])
+  @@index([currentPeriodEnd])
+  @@index([syncedAt])
+}
+
+enum SubscriptionPlan {
+  BASIC    // $9.99/month - SD, 1 device
+  STANDARD // $14.99/month - HD, 2 devices
+  PREMIUM  // $19.99/month - 4K, 4 devices
+}
+
+enum BillingCycle {
+  MONTHLY
+  ANNUAL
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  UNPAID
+  INCOMPLETE
+  INCOMPLETE_EXPIRED
+  TRIALING
+}
+
+model PaymentMethod {
+  id       String @id @default(cuid())
+  userId   String
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Stripe payment method
+  stripePaymentMethodId String @unique
+  
+  // Card details (from Stripe)
+  cardBrand String?
+  cardLast4 String?
+  cardExpMonth Int?
+  cardExpYear Int?
+  
+  // Billing address
+  billingName String?
+  billingEmail String?
+  billingAddress Json?
+  
+  isDefault Boolean @default(false)
+  isActive  Boolean @default(true)
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@map("payment_methods")
+}
+
+model Invoice {
+  id             String @id @default(cuid())
+  userId         String
+  user           User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  subscriptionId String?
+  subscription   Subscription? @relation(fields: [subscriptionId], references: [id])
+  
+  // Stripe invoice
+  stripeInvoiceId String? @unique
+  
+  // Invoice details
+  amount     Decimal @db.Decimal(10,2)
+  currency   String @default("USD")
+  status     InvoiceStatus
+  
+  // Billing period
+  periodStart DateTime
+  periodEnd   DateTime
+  
+  // Payment information
+  paidAt     DateTime?
+  dueDate    DateTime?
+  attemptedAt DateTime?
+  
+  // Invoice file
+  invoiceUrl String?
+  invoicePdf String?
+  
+  description String?
+  metadata   Json @default("{}")
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@map("invoices")
+}
+
+enum InvoiceStatus {
+  DRAFT
+  OPEN
+  PAID
+  UNCOLLECTIBLE
+  VOID
+}
+
+// ============================================================================
+// CONTENT MANAGEMENT (@service:content)
+// ============================================================================
+
+model Content {
+  id          String      @id @default(cuid())
+  title       String
+  description String?
+  synopsis    String?
+  
+  // Content type and metadata
+  type        ContentType
+  subType     String?     // movie, series, documentary, etc.
+  genre       String[]    @default([])
+  tags        String[]    @default([])
+  
+  // Release information
+  releaseDate DateTime?
+  country     String[]    @default([])
+  language    String[]    @default([])
+  
+  // Content ratings
+  contentRating String?   // G, PG, PG-13, R, etc.
+  imdbRating   Decimal?   @db.Decimal(3,1)
+  imdbId       String?    @unique
+  tmdbId       String?    @unique
+  
+  // Media assets
+  posterUrl    String?
+  backdropUrl  String?
+  trailerUrl   String?
+  logoUrl      String?
+  
+  // Duration (in minutes)
+  duration     Int?
+  
+  // Series specific
+  totalSeasons Int?
+  totalEpisodes Int?
+  
+  // Availability
+  isActive     Boolean    @default(true)
+  isAvailable  Boolean    @default(true)
+  availableIn  String[]   @default([]) // Country codes
+  
+  // Content access
+  requiresSubscription Boolean @default(true)
+  isRentalOnly Boolean @default(false)
+  isPremiumContent Boolean @default(false)
+  
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  
+  // Microservice sync metadata
+  version      Int        @default(1)
+  syncedAt     DateTime   @default(now())
+  
+  // Relationships
+  seasons      Season[]
+  episodes     Episode[]
+  cast         CastMember[]
+  crew         CrewMember[]
+  watchHistory WatchHistory[]
+  watchlist    Watchlist[]
+  ratings      Rating[]
+  reviews      Review[]
+  rentals      Rental[]
+  partyWatchSessions PartyWatchSession[]
+  videoFiles   VideoFile[]
+  subtitleFiles SubtitleFile[]
+  
+  @@map("content")
+  @@index([type])
+  @@index([isActive])
+  @@index([isAvailable])
+  @@index([releaseDate])
+  @@index([genre])
+  @@index([contentRating])
+  @@index([syncedAt])
+}
+
+enum ContentType {
+  MOVIE
+  SERIES
+  DOCUMENTARY
+  SHORT
+  SPECIAL
+}
+
+model Season {
+  id        String    @id @default(cuid())
+  contentId String
+  content   Content   @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  
+  seasonNumber Int
+  title        String?
+  description  String?
+  posterUrl    String?
+  
+  airDate      DateTime?
+  episodeCount Int?
+  
+  isActive     Boolean   @default(true)
+  
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  
+  // Relationships
+  episodes     Episode[]
+  
+  @@unique([contentId, seasonNumber])
+  @@map("seasons")
+}
+
+model Episode {
+  id        String   @id @default(cuid())
+  contentId String
+  content   Content  @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  seasonId  String?
+  season    Season?  @relation(fields: [seasonId], references: [id], onDelete: SetNull)
+  
+  episodeNumber Int
+  seasonNumber  Int?
+  title         String
+  description   String?
+  
+  // Media assets
+  stillUrl      String?
+  duration      Int?      // in minutes
+  
+  // Release information
+  airDate       DateTime?
+  
+  isActive      Boolean   @default(true)
+  
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  
+  // Relationships
+  watchHistory  WatchHistory[]
+  videoFiles    VideoFile[]
+  subtitleFiles SubtitleFile[]
+  
+  @@unique([contentId, seasonNumber, episodeNumber])
+  @@map("episodes")
+}
+
+model CastMember {
+  id        String   @id @default(cuid())
+  contentId String
+  content   Content  @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  
+  name      String
+  character String?
+  order     Int?
+  
+  profileUrl String?
+  imageUrl   String?
+  
+  createdAt  DateTime @default(now())
+  
+  @@map("cast_members")
+}
+
+model CrewMember {
+  id        String   @id @default(cuid())
+  contentId String
+  content   Content  @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  
+  name      String
+  job       String   // Director, Producer, Writer, etc.
+  department String? // Directing, Production, Writing, etc.
+  
+  profileUrl String?
+  imageUrl   String?
+  
+  createdAt  DateTime @default(now())
+  
+  @@map("crew_members")
+}
+
+model VideoFile {
+  id        String   @id @default(cuid())
+  contentId String?
+  content   Content? @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  episodeId String?
+  episode   Episode? @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+  
+  // File information
+  filename  String
+  filePath  String
+  fileSize  BigInt
+  mimeType  String
+  
+  // Video properties
+  quality   VideoQuality
+  resolution String?  // 1920x1080, 3840x2160, etc.
+  bitrate   Int?      // in kbps
+  framerate Decimal? @db.Decimal(5,2)
+  codec     String?   // H.264, H.265, etc.
+  
+  // Audio properties
+  audioCodec String?
+  audioChannels Int?
+  audioLanguage String?
+  
+  // CDN and streaming
+  cdnUrl    String?
+  streamUrl String?
+  hlsUrl    String?
+  dashUrl   String?
+  
+  isActive  Boolean  @default(true)
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@map("video_files")
+}
+
+enum VideoQuality {
+  AUTO
+  SD    // 480p
+  HD    // 720p
+  FHD   // 1080p
+  UHD   // 4K
+}
+
+model SubtitleFile {
+  id        String   @id @default(cuid())
+  contentId String?
+  content   Content? @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  episodeId String?
+  episode   Episode? @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+  
+  // File information
+  filename String
+  filePath String
+  fileSize Int
+  format   String   // SRT, VTT, ASS, etc.
+  
+  // Subtitle properties
+  language String
+  label    String?  // "English (CC)", "Spanish", etc.
+  isDefault Boolean @default(false)
+  isForced Boolean @default(false)
+  
+  // CDN
+  cdnUrl   String?
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@map("subtitle_files")
+}
+
+// ============================================================================
+// USER INTERACTIONS & HISTORY (@service:streaming + @service:analytics)
+// ============================================================================
+
+model WatchHistory {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  profileId String
+  profile   Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  contentId String
+  content   Content  @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  episodeId String?
+  episode   Episode? @relation(fields: [episodeId], references: [id], onDelete: SetNull)
+  
+  // Progress tracking
+  watchedDuration Int      @default(0) // in seconds
+  totalDuration   Int?     // in seconds
+  progressPercent Decimal? @db.Decimal(5,2)
+  isCompleted     Boolean  @default(false)
+  
+  // Session information
+  lastWatchedAt   DateTime @default(now())
+  deviceType      DeviceType?
+  
+  // Metadata
+  watchedFrom     String?  // home, search, recommendation, etc.
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  // Microservice sync metadata
+  version         Int      @default(1)
+  syncedAt        DateTime @default(now())
+  
+  @@unique([userId, profileId, contentId, episodeId])
+  @@map("watch_history")
+  @@index([userId, profileId])
+  @@index([contentId])
+  @@index([lastWatchedAt])
+  @@index([isCompleted])
+  @@index([syncedAt])
+}
+
+model Watchlist {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  profileId String
+  profile   Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  contentId String
+  content   Content  @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  
+  addedAt   DateTime @default(now())
+  
+  @@unique([userId, profileId, contentId])
+  @@map("watchlist")
+}
+
+model Rating {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  profileId String
+  profile   Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  contentId String
+  content   Content  @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  
+  rating    Int      @db.SmallInt // 1-5 stars
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@unique([userId, profileId, contentId])
+  @@map("ratings")
+}
+
+model Review {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  profileId String
+  profile   Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  contentId String
+  content   Content  @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  
+  rating    Int?     @db.SmallInt // 1-5 stars (optional, can rate without review)
+  title     String?
+  text      String   @db.Text
+  
+  // Moderation
+  isApproved Boolean  @default(false)
+  isFlagged  Boolean  @default(false)
+  moderatedAt DateTime?
+  moderatedBy String?
+  
+  // Helpfulness
+  helpfulCount Int     @default(0)
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  // Relationships
+  reviewHelpful ReviewHelpful[]
+  
+  @@unique([userId, profileId, contentId])
+  @@map("reviews")
+}
+
+model ReviewHelpful {
+  id       String  @id @default(cuid())
+  userId   String
+  reviewId String
+  review   Review  @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  
+  isHelpful Boolean
+  
+  createdAt DateTime @default(now())
+  
+  @@unique([userId, reviewId])
+  @@map("review_helpful")
+}
+
+// ============================================================================
+// CONTENT RENTAL SYSTEM (@service:payment + @service:streaming)
+// ============================================================================
+
+model Rental {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  contentId String
+  content   Content  @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  
+  // Stripe payment
+  stripePaymentIntentId String? @unique
+  
+  // Rental details
+  quality   VideoQuality
+  amount    Decimal  @db.Decimal(10,2)
+  currency  String   @default("USD")
+  
+  // Rental period
+  rentalStart DateTime @default(now())
+  rentalEnd   DateTime
+  
+  // Status
+  status    RentalStatus @default(ACTIVE)
+  
+  // Access tracking
+  firstWatchedAt DateTime?
+  lastWatchedAt  DateTime?
+  watchCount     Int       @default(0)
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@map("rentals")
+}
+
+enum RentalStatus {
+  ACTIVE
+  EXPIRED
+  CANCELED
+  REFUNDED
+}
+
+// ============================================================================
+// SOCIAL FEATURES (PARTY WATCH) (@service:social + @service:streaming)
+// ============================================================================
+
+model PartyWatchSession {
+  id        String   @id @default(cuid())
+  hostId    String
+  host      User     @relation(fields: [hostId], references: [id], onDelete: Cascade)
+  profileId String
+  profile   Profile  @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  contentId String
+  content   Content  @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  episodeId String?
+  
+  // Party details
+  partyCode String   @unique
+  inviteUrl String   @unique
+  maxMembers Int     @default(10)
+  isPublic  Boolean  @default(false)
+  
+  // Playback state
+  currentPosition Int     @default(0) // in seconds
+  isPlaying       Boolean @default(false)
+  playbackRate    Decimal @default(1.0) @db.Decimal(3,2)
+  
+  // Session status
+  status    PartyStatus @default(WAITING)
+  
+  // Timestamps
+  startedAt DateTime?
+  endedAt   DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  // Relationships
+  members   PartyWatchMember[]
+  messages  PartyWatchMessage[]
+  
+  @@map("party_watch_sessions")
+}
+
+enum PartyStatus {
+  WAITING
+  ACTIVE
+  PAUSED
+  ENDED
+}
+
+model PartyWatchMember {
+  id        String             @id @default(cuid())
+  sessionId String
+  session   PartyWatchSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  userId    String
+  
+  // Member status
+  isActive  Boolean   @default(true)
+  role      PartyRole @default(MEMBER)
+  
+  // Connection tracking
+  lastSeen  DateTime  @default(now())
+  joinedAt  DateTime  @default(now())
+  leftAt    DateTime?
+  
+  @@unique([sessionId, userId])
+  @@map("party_watch_members")
+}
+
+enum PartyRole {
+  HOST
+  MODERATOR
+  MEMBER
+}
+
+model PartyWatchMessage {
+  id        String             @id @default(cuid())
+  sessionId String
+  session   PartyWatchSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Message content
+  message   String             @db.Text
+  messageType MessageType      @default(TEXT)
+  
+  // Timestamps
+  timestamp Int                // Video timestamp when message was sent
+  createdAt DateTime           @default(now())
+  
+  @@map("party_watch_messages")
+}
+
+enum MessageType {
+  TEXT
+  EMOJI
+  REACTION
+  SYSTEM
+}
+
+// ============================================================================
+// NOTIFICATIONS & SUPPORT (@service:notification)
+// ============================================================================
+
+model Notification {
+  id     String           @id @default(cuid())
+  userId String
+  user   User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Notification content
+  type    NotificationType
+  title   String
+  message String           @db.Text
+  data    Json?            @default("{}")
+  
+  // Delivery channels
+  channels String[]        @default([]) // email, push, sms, in_app
+  
+  // Status
+  isRead     Boolean       @default(false)
+  isDelivered Boolean      @default(false)
+  
+  // Scheduling
+  scheduledFor DateTime?
+  sentAt       DateTime?
+  readAt       DateTime?
+  
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  
+  @@map("notifications")
+}
+
+enum NotificationType {
+  WELCOME
+  EMAIL_VERIFICATION
+  PASSWORD_RESET
+  LOGIN_ALERT
+  SUBSCRIPTION_CONFIRMATION
+  PAYMENT_SUCCESS
+  PAYMENT_FAILED
+  SUBSCRIPTION_RENEWAL
+  SUBSCRIPTION_CANCELED
+  CONTENT_RECOMMENDATION
+  NEW_EPISODE
+  RENTAL_EXPIRING
+  PARTY_INVITATION
+  SECURITY_ALERT
+  PROMOTIONAL
+  SYSTEM_MAINTENANCE
+}
+
+model SupportTicket {
+  id       String        @id @default(cuid())
+  userId   String
+  user     User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Ticket details
+  subject  String
+  message  String        @db.Text
+  category TicketCategory
+  priority TicketPriority @default(MEDIUM)
+  status   TicketStatus   @default(OPEN)
+  
+  // Assignment
+  assignedTo String?
+  
+  // Metadata
+  userAgent  String?
+  deviceInfo Json?
+  
+  // Response tracking
+  lastResponseAt DateTime?
+  resolvedAt     DateTime?
+  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  // Relationships
+  responses SupportResponse[]
+  
+  @@map("support_tickets")
+}
+
+enum TicketCategory {
+  TECHNICAL
+  BILLING
+  CONTENT
+  ACCOUNT
+  FEATURE_REQUEST
+  OTHER
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  WAITING_FOR_USER
+  RESOLVED
+  CLOSED
+}
+
+model SupportResponse {
+  id       String        @id @default(cuid())
+  ticketId String
+  ticket   SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  
+  // Response details
+  message  String        @db.Text
+  isFromUser Boolean     @default(true)
+  authorId String?       // Staff member ID if response from support
+  
+  // Attachments
+  attachments Json?      @default("[]")
+  
+  createdAt DateTime    @default(now())
+  
+  @@map("support_responses")
+}
+
+// ============================================================================
+// ANALYTICS & TRACKING (@service:analytics)
+// ============================================================================
+
+model ViewingSession {
+  id        String   @id @default(cuid())
+  userId    String?
+  profileId String?
+  contentId String
+  episodeId String?
+  
+  // Session details
+  sessionStart DateTime @default(now())
+  sessionEnd   DateTime?
+  duration     Int?     // in seconds
+  
+  // Device and location
+  deviceType   DeviceType?
+  deviceId     String?
+  ipAddress    String?
+  location     String?
+  userAgent    String?
+  
+  // Playback quality
+  averageQuality VideoQuality?
+  qualityChanges Int?         @default(0)
+  bufferingEvents Int?        @default(0)
+  bufferingTime   Int?        @default(0) // in seconds
+  
+  // Exit reason
+  exitReason   String?       // completed, user_exit, error, etc.
+  
+  createdAt    DateTime      @default(now())
+  
+  @@map("viewing_sessions")
+}
+
+model ContentAnalytics {
+  id        String   @id @default(cuid())
+  contentId String   @unique
+  
+  // View counts
+  totalViews      Int @default(0)
+  uniqueViews     Int @default(0)
+  completionRate  Decimal? @db.Decimal(5,2)
+  
+  // Ratings and reviews
+  averageRating   Decimal? @db.Decimal(3,2)
+  totalRatings    Int @default(0)
+  totalReviews    Int @default(0)
+  
+  // Engagement
+  watchlistAdds   Int @default(0)
+  sharesCount     Int @default(0)
+  
+  // Time-based analytics
+  peakViewingHour Int?
+  popularRegions  String[] @default([])
+  
+  updatedAt       DateTime @updatedAt
+  
+  @@map("content_analytics")
+}
+
+// ============================================================================
+// MICROSERVICE SYNCHRONIZATION & EVENTS
+// ============================================================================
+
+// Event sourcing table for cross-service synchronization
+model ServiceEvent {
+  id          String   @id @default(cuid())
+  
+  // Event metadata
+  eventType   String   // UserCreated, ProfileUpdated, ContentAdded, etc.
+  service     String   // auth, content, streaming, payment, etc.
+  aggregateId String   // ID of the entity that changed
+  version     Int      // Version of the aggregate
+  
+  // Event payload
+  payload     Json
+  metadata    Json     @default("{}")
+  
+  // Tracking
+  createdAt   DateTime @default(now())
+  processedBy String[] @default([]) // Services that have processed this event
+  
+  @@map("service_events")
+  @@index([eventType])
+  @@index([service])
+  @@index([aggregateId])
+  @@index([createdAt])
+  @@index([processedBy])
+}
+
+// Service health and sync status
+model ServiceStatus {
+  id           String   @id @default(cuid())
+  serviceName  String   @unique
+  
+  // Health information
+  isHealthy    Boolean  @default(true)
+  lastHeartbeat DateTime @default(now())
+  version      String?
+  
+  // Sync status
+  lastSyncAt   DateTime @default(now())
+  syncLag      Int      @default(0) // in milliseconds
+  
+  // Error tracking
+  errorCount   Int      @default(0)
+  lastError    String?
+  lastErrorAt  DateTime?
+  
+  updatedAt    DateTime @updatedAt
+  
+  @@map("service_status")
+  @@index([serviceName])
+  @@index([isHealthy])
+  @@index([lastHeartbeat])
+}
+
+// ============================================================================
+// PERFORMANCE INDEXES FOR MICROSERVICES
+// ============================================================================
+
+// Cross-service query optimization indexes are already included above in each model
+// Additional composite indexes for complex queries across service boundaries
+
+// Multi-service user context queries
+// @@index([userId, profileId, contentId]) on watch_history - already added
+// @@index([userId, status, planType]) on subscriptions - already added
+
+// Content discovery across services
+// @@index([type, isActive, releaseDate]) on content - covered by individual indexes
+// @@index([contentId, rating]) on ratings
+// @@index([contentId, totalViews]) on content_analytics
+
+// Real-time streaming queries
+// @@index([sessionId, userId]) on party_watch_members
+// @@index([contentId, episodeId, quality]) on video_files
+
+// Analytics aggregation queries  
+// @@index([contentId, sessionStart]) on viewing_sessions
+// @@index([userId, createdAt]) on multiple tables for user analytics
